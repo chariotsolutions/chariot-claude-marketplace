@@ -1,0 +1,17 @@
+{
+  "name": "chariot-marketplace",
+  "owner": {
+    "name": "Chariot Solutions"
+  },
+  "metadata": {
+    "description": "Shared Claude Code skills for the Chariot Solutions team",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "chariot-skills",
+      "description": "Collection of shared skills for the Chariot Solutions team",
+      "source": "./plugins/chariot-skills"
+    }
+  ]
+}
