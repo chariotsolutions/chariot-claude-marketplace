@@ -13,7 +13,7 @@ A [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-market
 Add the marketplace:
 
 ```
-/plugin marketplace add chariot-solutions/chariot-claude-marketplace
+/plugin marketplace add chariotsolutions/chariot-claude-marketplace
 ```
 
 Install the skills plugin:
@@ -40,7 +40,7 @@ To automatically prompt team members to install this marketplace when they open 
     "chariot-marketplace": {
       "source": {
         "source": "github",
-        "repo": "chariot-solutions/chariot-claude-marketplace"
+        "repo": "chariotsolutions/chariot-claude-marketplace"
       }
     }
   }
