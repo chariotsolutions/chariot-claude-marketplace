@@ -2,11 +2,12 @@
 
 A [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) for sharing skills across the Chariot Solutions team.
 
-## Available Skills
+## Available Plugins
 
-| Skill | Description |
-|-------|-------------|
-| `playwright-e2e` | Scaffold a Playwright E2E test suite for a full-stack web app |
+| Plugin | Description |
+|--------|-------------|
+| `chariot-skills` | Collection of shared skills (includes `playwright-e2e`) |
+| `chariot-spec-first-testing` | Enforces spec-first testing discipline with hooks and spec format documentation |
 
 ## Installation
 
@@ -16,10 +17,11 @@ Add the marketplace:
 /plugin marketplace add chariotsolutions/chariot-claude-marketplace
 ```
 
-Install the skills plugin:
+Install plugins:
 
 ```
 /plugin install chariot-skills@chariot-marketplace
+/plugin install chariot-spec-first-testing@chariot-marketplace
 ```
 
 ## Usage
@@ -52,16 +54,27 @@ To also enable the plugin by default:
 ```json
 {
   "enabledPlugins": {
-    "chariot-skills@chariot-marketplace": true
+    "chariot-skills@chariot-marketplace": true,
+    "chariot-spec-first-testing@chariot-marketplace": true
   }
 }
 ```
 
-## Adding a New Skill
+## Adding New Plugins or Skills
+
+To add a skill to the existing `chariot-skills` plugin:
 
 1. Create a directory under `plugins/chariot-skills/skills/<skill-name>/`
 2. Add a `SKILL.md` file (required) with frontmatter and instructions
 3. Add any supporting files the skill references
-4. Update this README
+
+To add a new standalone plugin:
+
+1. Create a directory under `plugins/<plugin-name>/`
+2. Add `.claude-plugin/plugin.json` with the plugin manifest
+3. Add skills, hooks, or other plugin components
+4. Register it in `.claude-plugin/marketplace.json`
+
+Update this README in either case.
 
 See the [Claude Code plugins docs](https://code.claude.com/docs/en/plugins) for details on skill authoring.
