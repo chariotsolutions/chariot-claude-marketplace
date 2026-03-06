@@ -12,6 +12,11 @@
       "name": "chariot-skills",
       "description": "Collection of shared skills for the Chariot Solutions team",
       "source": "./plugins/chariot-skills"
+    },
+    {
+      "name": "chariot-spec-first-testing",
+      "description": "Enforces spec-first testing discipline with hooks and spec format documentation",
+      "source": "./plugins/chariot-spec-first-testing"
     }
   ]
 }
