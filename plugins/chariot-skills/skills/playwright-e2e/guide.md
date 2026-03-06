@@ -166,8 +166,8 @@ project structure.
 
 ### utils/constants.ts
 
-Central place for test user definitions, localStorage key names, and storage
-state paths.
+Central place for test user definitions, auth-related key names, and storage
+state paths. Adapt the structure to what the app actually uses.
 
 ```typescript
 import path from "path";
@@ -175,11 +175,11 @@ import path from "path";
 // Set once in playwright.config.ts, inherited by all workers
 const RUN_ID = process.env.TEST_RUN_ID || String(Date.now());
 
+// If the app stores auth state in localStorage, define the key names here.
+// If the app uses httpOnly cookies, you won't need this — cookies are
+// handled automatically by the browser context and storageState.
 export const LOCAL_STORAGE_KEYS = {
-  token: "auth_token",         // adapt to your app's actual key names
-  refreshToken: "auth_refresh_token",
-  userId: "auth_user_id",
-  // ... any other keys your app stores
+  // ... adapt to your app's actual key names
 } as const;
 
 export interface TestUser {
@@ -187,15 +187,16 @@ export interface TestUser {
   password: string;
 }
 
+// Define one user per auth persona the tests need.
+// - Single-tenant app: one authenticated user may be enough
+// - Multi-tenant app: one user per tenant to test data isolation
+// - Role-based app: one user per role (admin, user, viewer)
 export const TEST_USERS = {
   userA: {
     email: `e2e-user-a-${RUN_ID}@test.com`,
     password: "Test1234!",
   },
-  userB: {
-    email: `e2e-user-b-${RUN_ID}@test.com`,
-    password: "Test1234!",
-  },
+  // userB: { ... },  // add more personas as needed
 } as const satisfies Record<string, TestUser>;
 
 export type TestRole = keyof typeof TEST_USERS;
@@ -219,32 +220,15 @@ avoids collisions without needing to wipe the DB.
 ### utils/api.ts
 
 Fast, headless API helpers for seeding data. Used in global-setup and in tests
-that need to seed data without going through the UI.
+that need to seed data without going through the UI. The exact functions depend
+on the app's API — the pattern is always the same:
 
 ```typescript
 import type { APIRequestContext } from "@playwright/test";
 
+// Match your API's actual response shape
 export interface AuthResponse {
-  token: string;
-  refreshToken: string;
-  userId: string;
-  // ... match your API's actual response shape
-}
-
-export async function registerViaApi(
-  request: APIRequestContext,
-  email: string,
-  password: string,
-): Promise<AuthResponse> {
-  const response = await request.post("/api/auth/register", {
-    data: { email, password },
-  });
-  if (!response.ok()) {
-    throw new Error(
-      `Register failed for ${email}: ${response.status()} ${await response.text()}`,
-    );
-  }
-  return response.json();
+  // token, refreshToken, userId, tenantId, sessionId, etc.
 }
 
 export async function loginViaApi(
@@ -262,9 +246,11 @@ export async function loginViaApi(
   }
   return response.json();
 }
+
+// Add registerViaApi, createItemViaApi, etc. following the same pattern —
+// one helper per API action you'll call from global-setup or test seeding.
 ```
 
-Add one helper per API action you'll call from tests (e.g. `createItemViaApi`).
 These use Playwright's `APIRequestContext` — not a browser, just HTTP calls.
 
 **Note on request base URL:** The `request` fixture uses `baseURL` from
@@ -277,80 +263,82 @@ that proxy and work. If the frontend does **not** proxy, define a separate
 
 ### fixtures/global-setup.ts
 
-Runs once before all tests. Registers test users via API, injects tokens into
-the browser, and saves storage state files.
+Runs once before all tests. Authenticates test users via API, injects auth
+state into the browser, and saves storage state files. The core pattern is:
+
+**API for speed → inject auth state → verify in browser → save state.**
+
+This avoids flaky UI interactions during setup while still validating the
+auth flow works end-to-end.
 
 ```typescript
 import { test as setup } from "@playwright/test";
-import { TEST_USERS, LOCAL_STORAGE_KEYS, storageStatePath, type TestRole } from "../utils/constants";
-import { registerViaApi } from "../utils/api";
+import { TEST_USERS, storageStatePath, type TestRole } from "../utils/constants";
 
-const roles: TestRole[] = ["userA", "userB"];
+const roles: TestRole[] = Object.keys(TEST_USERS) as TestRole[];
 
 for (const role of roles) {
-  setup(`register ${role}`, async ({ page, request }) => {
+  setup(`authenticate ${role}`, async ({ page, request }) => {
     const user = TEST_USERS[role];
 
-    // 1. Register via API (fast, no browser interaction needed)
-    const auth = await registerViaApi(request, user.email, user.password);
+    // 1. Authenticate via API (fast, no browser interaction)
+    //    This might be register, login, or both — depends on the app.
+    //    Adapt to your app's auth endpoints and response shape.
+    const auth = await loginViaApi(request, user.email, user.password);
 
-    // 2. Inject tokens into browser localStorage
-    await page.goto("/login"); // need a page loaded to access localStorage
-    await page.evaluate(
-      ({ keys, auth: a }) => {
-        localStorage.setItem(keys.token, a.token);
-        localStorage.setItem(keys.refreshToken, a.refreshToken);
-        localStorage.setItem(keys.userId, a.userId);
-      },
-      { keys: LOCAL_STORAGE_KEYS, auth },
-    );
+    // 2. Inject auth state into the browser.
+    //    HOW this works depends on the app:
+    //
+    //    localStorage tokens (JWT apps):
+    //      await page.goto("/login");
+    //      await page.evaluate(({ token }) => {
+    //        localStorage.setItem("auth_token", token);
+    //      }, auth);
+    //
+    //    httpOnly cookies (session apps):
+    //      Cookies are captured automatically — just login via the
+    //      browser or use page.context().addCookies() with cookies
+    //      from the API response headers.
+    //
+    // The key requirement: after this step, navigating to a protected
+    // page should work without any login interaction.
 
     // 3. Navigate to app and verify auth works
     await page.goto("/");
     await page.getByRole("heading", { name: "<LANDING_PAGE_HEADING>", exact: true }).waitFor();
 
-    // 4. Save storage state for reuse by auth fixtures
+    // 4. Save storage state (captures localStorage + cookies)
     await page.context().storageState({ path: storageStatePath(role) });
   });
 }
 ```
 
-**Pattern:** API for speed → inject tokens → verify in browser → save state.
-This avoids flaky UI interactions during setup while still validating the
-auth flow works end-to-end.
-
-**If your app uses cookies instead of localStorage**, step 2 changes: use
-`request.post()` to login (which receives Set-Cookie headers), then
-`await page.context().addCookies(...)` to transfer them to the browser context.
-
 ### fixtures/auth.ts
 
 Custom Playwright fixtures that provide pre-authenticated browser pages.
-Tests request these by name (e.g. `{ userAPage: page }`).
+Tests request these by name (e.g. `{ authenticatedPage: page }`).
+
+The number and naming of fixtures depends on what the app needs:
+- **Single-tenant, no roles:** `authenticatedPage` + `unauthenticatedPage`
+- **Single-tenant, roles:** `adminPage` + `userPage` + `unauthenticatedPage`
+- **Multi-tenant:** `tenantAPage` + `tenantBPage` + `unauthenticatedPage`
+
+The pattern for each fixture is identical — only the storage state file differs:
 
 ```typescript
 import { test as base, type Page } from "@playwright/test";
 import { storageStatePath } from "../utils/constants";
 
 type AuthFixtures = {
-  userAPage: Page;
-  userBPage: Page;
+  authenticatedPage: Page;
   unauthenticatedPage: Page;
+  // add more personas as needed
 };
 
 export const test = base.extend<AuthFixtures>({
-  userAPage: async ({ browser }, use) => {
+  authenticatedPage: async ({ browser }, use) => {
     const context = await browser.newContext({
       storageState: storageStatePath("userA"),
-    });
-    const page = context.pages()[0] ?? (await context.newPage());
-    await use(page);
-    await context.close();
-  },
-
-  userBPage: async ({ browser }, use) => {
-    const context = await browser.newContext({
-      storageState: storageStatePath("userB"),
     });
     const page = context.pages()[0] ?? (await context.newPage());
     await use(page);
@@ -371,9 +359,8 @@ export { expect } from "@playwright/test";
 **Every test file** imports `{ test, expect }` from this module, not from
 `@playwright/test`. This is what makes the fixture system work.
 
-**One fixture per auth persona.** If you have roles (admin, user, viewer), add
-one fixture per role. Each gets its own browser context with its own storage
-state, so they never interfere with each other.
+**One fixture per auth persona.** Each gets its own browser context with its
+own storage state, so they never interfere with each other.
 
 ## 5. Page Object Model
 
@@ -486,6 +473,19 @@ specific selector.
 
 ## 7. Test organization
 
+### Typical test categories
+
+Use this as a checklist when planning tests. Include only what applies to the
+app — not every app has registration, multi-tenancy, or token refresh.
+
+| Category | What to test | When it applies |
+|----------|-------------|-----------------|
+| **Auth flows** | Login valid/invalid, register (if public), logout + re-entry blocked, route guards for protected paths, navigation links between auth pages | Every app with authentication |
+| **CRUD** | Empty state, create + appears in list, create multiple, edit, delete, cancel without saving | Every app with data entry |
+| **Data isolation** | Seed data for multiple users/tenants via API, verify each sees only their data | Multi-tenant apps or apps where users have private data |
+| **Auth edge cases** | Corrupted/expired tokens, missing tokens, token refresh behavior | Apps with client-side token management |
+| **Navigation** | Deep links work when authenticated, breadcrumbs, back button behavior | Apps with multiple routes |
+
 ### File structure
 
 Group tests by feature area, not by page:
@@ -494,8 +494,7 @@ Group tests by feature area, not by page:
 tests/
   auth.spec.ts              # login, register, logout, route guards
   <feature>.spec.ts         # CRUD for the main domain object
-  tenant-isolation.spec.ts  # multi-tenant separation
-  token-refresh.spec.ts     # auth edge cases
+  data-isolation.spec.ts    # if applicable: multi-user/tenant separation
 ```
 
 ### Serial vs parallel
@@ -508,9 +507,9 @@ opt in to serial mode per describe block:
 test.describe("CRUD", () => {
   test.describe.configure({ mode: "serial" });
 
-  test("create item", async ({ userAPage: page }) => { ... });
-  test("edit item", async ({ userAPage: page }) => { ... });
-  test("item persists after reload", async ({ userAPage: page }) => { ... });
+  test("create item", async ({ authenticatedPage: page }) => { ... });
+  test("edit item", async ({ authenticatedPage: page }) => { ... });
+  test("item persists after reload", async ({ authenticatedPage: page }) => { ... });
 });
 ```
 
@@ -524,7 +523,7 @@ import { SomePage } from "../pages/some.page";
 import { TEST_USERS } from "../utils/constants";
 
 test.describe("Feature name", () => {
-  test("scenario description", async ({ userAPage: page }) => {
+  test("scenario description", async ({ authenticatedPage: page }) => {
     // Arrange: instantiate page objects
     const somePage = new SomePage(page);
 
@@ -546,22 +545,22 @@ with other test files running in parallel:
 ```typescript
 const prefix = `crud-${Date.now()}`;
 
-test("create item", async ({ userAPage: page }) => {
+test("create item", async ({ authenticatedPage: page }) => {
   await createPage.fillForm({ title: `${prefix} My Item` });
   // ...
 });
 ```
 
-For cross-tenant tests, seed data via API in a setup test rather than through
+For data isolation tests, seed data via API in a setup test rather than through
 the UI:
 
 ```typescript
-test("seed data for both tenants", async ({ request }) => {
+test("seed data for both users", async ({ request }) => {
   const authA = await loginViaApi(request, TEST_USERS.userA.email, TEST_USERS.userA.password);
-  await createItemViaApi(request, authA.token, { title: "Tenant A item" });
+  await createItemViaApi(request, authA.token, { title: "User A item" });
 
   const authB = await loginViaApi(request, TEST_USERS.userB.email, TEST_USERS.userB.password);
-  await createItemViaApi(request, authB.token, { title: "Tenant B item" });
+  await createItemViaApi(request, authB.token, { title: "User B item" });
 });
 ```
 
@@ -569,32 +568,39 @@ test("seed data for both tenants", async ({ request }) => {
 
 When building the suite for a new project, follow this order:
 
-1. **Read the frontend code first.** Before writing anything, read the
-   actual components to understand exact labels, button text, heading levels,
-   route paths, localStorage keys, and error messages. Do not guess — wrong
-   locators are the #1 source of test failures.
+1. **Read the frontend code.** Before writing anything, read the actual
+   components to understand exact labels, button text, heading levels,
+   route paths, how auth state is stored, and error messages. Do not
+   guess — wrong locators are the #1 source of test failures.
 
-2. **Scaffold** — `package.json`, `tsconfig.json`, `playwright.config.ts`,
+2. **Read the backend API.** Understand auth endpoints, domain CRUD
+   endpoints, health check URL, and how auth tokens/sessions work.
+
+3. **Plan test scenarios.** Using the "Typical test categories" table in
+   §7, decide which categories apply to this app and list specific
+   scenarios for each. Present the plan for review before writing code.
+
+4. **Scaffold** — `package.json`, `tsconfig.json`, `playwright.config.ts`,
    `.gitignore`. Run `npm install && npx playwright install chromium`.
 
-3. **Verify scaffold** — `npx playwright test --list` should discover the
+5. **Verify scaffold** — `npx playwright test --list` should discover the
    setup project (even with no tests yet, confirm no config errors).
 
-4. **Utils** — `constants.ts` (match your app's actual localStorage keys
-   and auth response shape), `api.ts` (one function per API endpoint
-   you'll call from tests/setup).
+6. **Utils** — `constants.ts` (match your app's actual auth storage and
+   response shape), `api.ts` (one function per API endpoint you'll call
+   from tests/setup).
 
-5. **Fixtures** — `global-setup.ts` then `auth.ts`. Run
-   `npx playwright test --project=setup` to verify registration works and
+7. **Fixtures** — `global-setup.ts` then `auth.ts`. Run
+   `npx playwright test --project=setup` to verify auth works and
    storage state files are created in `playwright/.auth/`.
 
-6. **Page objects** — one per page. Read the actual component source to get
-   exact labels and roles. Start with the most-used pages (login, main list).
+8. **Page objects** — one per page. Use exact labels and roles from the
+   actual frontend components read in step 1.
 
-7. **Test specs** — one file at a time. Write, run, fix, move to the next.
-   Start with `auth.spec.ts` (validates the fixture system works).
+9. **Test specs** — one file at a time. Write, run, fix, move to the next.
+   Start with auth tests (validates the fixture system works).
 
-8. **Full run** — `npx playwright test` to verify everything together.
+10. **Full run** — `npx playwright test` to verify everything together.
 
 ## 9. Lessons learned
 
